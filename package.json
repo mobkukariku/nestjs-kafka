@@ -1,0 +1,35 @@
+{
+  "name": "@mobkukariku/nestjs-kafka",
+  "version": "1.0.0",
+  "description": "Reusable NestJS Kafka producer integration module",
+  "author": "Damir Tagankhozhaev",
+  "license": "UNLICENSED",
+  "private": false,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "build:watch": "tsc -p tsconfig.build.json --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "@nestjs/common": "^11.0.1",
+    "@nestjs/core": "^11.0.1",
+    "kafkajs": "^2.2.4",
+    "reflect-metadata": "^0.2.0"
+  },
+  "devDependencies": {
+    "@nestjs/common": "^11.0.1",
+    "@nestjs/core": "^11.0.1",
+    "@types/node": "^24.0.0",
+    "kafkajs": "^2.2.4",
+    "reflect-metadata": "^0.2.0",
+    "typescript": "^5.7.3"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  }
+}
