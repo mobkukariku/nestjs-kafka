@@ -5,6 +5,10 @@
   "author": "Damir Tagankhozhaev",
   "license": "UNLICENSED",
   "private": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mobkukariku/nestjs-kafka.git"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
