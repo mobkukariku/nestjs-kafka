@@ -110,7 +110,34 @@ export class PaymentsListener implements OnModuleInit {
 
 Реальное чтение сообщений (`consumer.run()`) стартует не в `onModuleInit`, а в `onApplicationBootstrap` — это гарантирует, что хендлеры из всех модулей приложения успеют зарегистрироваться до прихода первого сообщения.
 
-**Обработка ошибок:** входящее сообщение валидируется на соответствие форме `BaseKafkaEvent` (`eventId`, `eventType`, `timestamp`, `source`, `payload`). Если сообщение невалидно — оно сразу уходит в `deadLetterTopic` (если задан) или логируется и отбрасывается. Если хендлер бросает ошибку — попытка повторяется до `maxRetries` раз с нарастающей паузой, после чего сообщение также уходит в `deadLetterTopic` (через `KafkaProducerService`) либо логируется и отбрасывается, если `deadLetterTopic` не задан.
+### Типизированный payload
+
+В форме выше `event.payload` имеет тип `Record<string, unknown>` — библиотека проверяет только форму `BaseKafkaEvent`, но не то, что лежит внутри `payload` для конкретного `eventType`. Чтобы получить в хендлере типизированный payload, передайте третьим аргументом type guard:
+
+```ts
+interface PaymentProcessedPayload {
+  orderId: string;
+  amount: number;
+}
+
+function isPaymentProcessedPayload(payload: unknown): payload is PaymentProcessedPayload {
+  if (typeof payload !== 'object' || payload === null) return false;
+  const p = payload as Record<string, unknown>;
+  return typeof p.orderId === 'string' && typeof p.amount === 'number';
+}
+
+this.consumer.registerHandler(
+  'PAYMENT_PROCESSED',
+  async (event: BaseKafkaEvent<PaymentProcessedPayload>) => {
+    // event.payload.orderId: string, event.payload.amount: number
+  },
+  isPaymentProcessedPayload,
+);
+```
+
+Валидатор обязателен: сузить тип payload без него нельзя — API устроен так, чтобы типовое сужение всегда было подкреплено реальной рантайм-проверкой, а не пустым `as`-кастом.
+
+**Обработка ошибок:** входящее сообщение валидируется на соответствие форме `BaseKafkaEvent` (`eventId`, `eventType`, `timestamp`, `source`, `payload`). Если сообщение невалидно — оно сразу уходит в `deadLetterTopic` (если задан) или логируется и отбрасывается. То же происходит, если для хендлера задан валидатор payload и `payload` его не прошёл — проверка выполняется один раз, до ретраев, так как невалидный payload не станет валидным при повторе. Если хендлер бросает ошибку — попытка повторяется до `maxRetries` раз с нарастающей паузой, после чего сообщение также уходит в `deadLetterTopic` (через `KafkaProducerService`) либо логируется и отбрасывается, если `deadLetterTopic` не задан.
 
 ## Публикация новой версии
 

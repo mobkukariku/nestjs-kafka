@@ -9,7 +9,7 @@ import {
 import { randomUUID } from 'node:crypto';
 import { Consumer, EachMessagePayload, Kafka } from 'kafkajs';
 import { KAFKA_CLIENT, MODULE_OPTIONS_TOKEN } from './kafka.module-definition';
-import { KafkaEventHandler } from './types/kafka-event-handler.type';
+import { KafkaEventHandler, KafkaPayloadValidator } from './types/kafka-event-handler.type';
 import { KafkaConsumerOptions, KafkaModuleOptions } from './types/kafka-module-options.interface';
 import { BaseKafkaEvent, isBaseKafkaEvent } from './events/base.event';
 import { KafkaProducerService } from './kafka-producer.service';
@@ -22,11 +22,16 @@ interface ManagedConsumer {
     options: KafkaConsumerOptions;
 }
 
+interface RegisteredHandler {
+    handler: KafkaEventHandler;
+    validate?: KafkaPayloadValidator<unknown>;
+}
+
 @Injectable()
 export class KafkaConsumerService implements OnModuleInit, OnApplicationBootstrap, OnModuleDestroy {
     private readonly logger = new Logger(KafkaConsumerService.name);
     private readonly managedConsumers = new Map<string, ManagedConsumer>();
-    private readonly handlers = new Map<string, KafkaEventHandler>();
+    private readonly handlers = new Map<string, RegisteredHandler>();
 
     constructor(
         @Inject(KAFKA_CLIENT) private readonly kafka: Kafka,
@@ -49,8 +54,29 @@ export class KafkaConsumerService implements OnModuleInit, OnApplicationBootstra
         }
     }
 
-    registerHandler(eventType: string, handler: KafkaEventHandler): void {
-        this.handlers.set(eventType, handler);
+    /**
+     * Registers a handler that receives the raw, unnarrowed payload.
+     */
+    registerHandler(eventType: string, handler: KafkaEventHandler): void;
+    /**
+     * Registers a handler for a specific payload shape. The validator runs before
+     * the handler is called; a payload that fails it goes straight to the dead
+     * letter topic, so the narrowed type is always backed by a runtime check.
+     */
+    registerHandler<T>(
+        eventType: string,
+        handler: KafkaEventHandler<T>,
+        validate: KafkaPayloadValidator<T>,
+    ): void;
+    registerHandler<T>(
+        eventType: string,
+        handler: KafkaEventHandler<T>,
+        validate?: KafkaPayloadValidator<T>,
+    ): void {
+        this.handlers.set(eventType, {
+            handler: handler as KafkaEventHandler,
+            validate: validate as KafkaPayloadValidator<unknown> | undefined,
+        });
     }
 
     async onModuleInit() {
@@ -113,9 +139,22 @@ export class KafkaConsumerService implements OnModuleInit, OnApplicationBootstra
         }
 
         const event = parsed;
-        const handler = this.handlers.get(event.eventType);
-        if(!handler){
+        const registered = this.handlers.get(event.eventType);
+        if(!registered){
             this.logger.warn(`No handler registered for event type "${event.eventType}"`);
+            return;
+        }
+
+        const { handler, validate } = registered;
+
+        if (validate && !validate(event.payload)) {
+            this.logger.error(`Payload of event "${event.eventType}" failed handler validation`);
+            await this.sendToDeadLetter(
+                payload,
+                options,
+                raw,
+                `Invalid payload for event "${event.eventType}"`,
+            );
             return;
         }
 
