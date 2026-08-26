@@ -1,6 +1,6 @@
 {
   "name": "@mobkukariku/nestjs-kafka",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Reusable NestJS Kafka producer integration module",
   "author": "Damir Tagankhozhaev",
   "license": "UNLICENSED",
