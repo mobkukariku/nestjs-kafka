@@ -67,6 +67,51 @@ KafkaModule.forRootAsync({
 })
 ```
 
+## Consumer
+
+Модуль поддерживает несколько независимых consumer'ов (свой `groupId` и набор топиков у каждого) через `KafkaModuleOptions.consumers`:
+
+```ts
+KafkaModule.forRoot({
+  clientId: 'billing-service',
+  brokers: (process.env.KAFKA_BROKERS || 'localhost:9092').split(','),
+  consumers: [
+    {
+      groupId: 'billing-service.payments',
+      topics: ['billing.payments'],
+      maxRetries: 3,               // попыток на сообщение перед DLQ (по умолчанию 3)
+      deadLetterTopic: 'billing.payments.dlq', // опционально
+    },
+    {
+      groupId: 'billing-service.refunds',
+      topics: ['billing.refunds'],
+    },
+  ],
+})
+```
+
+Хендлеры регистрируются через `KafkaConsumerService.registerHandler(eventType, handler)` — обычно в `onModuleInit()` своего сервиса:
+
+```ts
+import { Injectable, OnModuleInit } from '@nestjs/common';
+import { KafkaConsumerService, BaseKafkaEvent } from '@mobkukariku/nestjs-kafka';
+
+@Injectable()
+export class PaymentsListener implements OnModuleInit {
+  constructor(private readonly consumer: KafkaConsumerService) {}
+
+  onModuleInit() {
+    this.consumer.registerHandler('PAYMENT_PROCESSED', async (event: BaseKafkaEvent) => {
+      // обработка события
+    });
+  }
+}
+```
+
+Реальное чтение сообщений (`consumer.run()`) стартует не в `onModuleInit`, а в `onApplicationBootstrap` — это гарантирует, что хендлеры из всех модулей приложения успеют зарегистрироваться до прихода первого сообщения.
+
+**Обработка ошибок:** входящее сообщение валидируется на соответствие форме `BaseKafkaEvent` (`eventId`, `eventType`, `timestamp`, `source`, `payload`). Если сообщение невалидно — оно сразу уходит в `deadLetterTopic` (если задан) или логируется и отбрасывается. Если хендлер бросает ошибку — попытка повторяется до `maxRetries` раз с нарастающей паузой, после чего сообщение также уходит в `deadLetterTopic` (через `KafkaProducerService`) либо логируется и отбрасывается, если `deadLetterTopic` не задан.
+
 ## Публикация новой версии
 
 ```bash
@@ -74,7 +119,3 @@ npm run build
 npm version patch   # или minor/major
 npm publish
 ```
-
-## Consumer
-
-Пока пакет поддерживает только producer. `KafkaModuleOptions.consumer` зарезервирован под будущий `KafkaConsumerService` — добавится без breaking changes для существующих потребителей.

@@ -10,3 +10,5 @@ export const {
   .setClassMethodName('forRoot')
   .setFactoryMethodName('createKafkaModuleOptions')
   .build();
+
+export const KAFKA_CLIENT = Symbol('KAFKA_CLIENT');

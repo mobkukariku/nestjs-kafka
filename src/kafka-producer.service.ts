@@ -6,7 +6,7 @@ import {
   OnModuleDestroy,
 } from '@nestjs/common';
 import { Kafka, Producer, CompressionTypes, logLevel } from 'kafkajs';
-import { MODULE_OPTIONS_TOKEN } from './kafka.module-definition';
+import { KAFKA_CLIENT } from './kafka.module-definition';
 import { KafkaModuleOptions } from './types/kafka-module-options.interface';
 import { BaseKafkaEvent } from './events/base.event';
 
@@ -21,25 +21,12 @@ const LOG_LEVEL_MAP: Record<string, logLevel> = {
 @Injectable()
 export class KafkaProducerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(KafkaProducerService.name);
-  private readonly kafka: Kafka;
   private readonly producer: Producer;
 
   constructor(
-    @Inject(MODULE_OPTIONS_TOKEN)
-    private readonly options: KafkaModuleOptions,
+    @Inject(KAFKA_CLIENT)
+    private readonly kafka: Kafka,
   ) {
-    this.kafka = new Kafka({
-      clientId: this.options.clientId,
-      brokers: this.options.brokers,
-      logLevel: LOG_LEVEL_MAP[this.options.logLevel ?? 'ERROR'],
-      retry: {
-        initialRetryTime: this.options.retry?.initialRetryTime ?? 300,
-        retries: this.options.retry?.retries ?? 8,
-      },
-      ...(this.options.ssl !== undefined && { ssl: this.options.ssl }),
-      ...(this.options.sasl && { sasl: this.options.sasl }),
-    });
-
     this.producer = this.kafka.producer({
       idempotent: true,
       maxInFlightRequests: 1,
