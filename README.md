@@ -1,6 +1,10 @@
 # @mobkukariku/nestjs-kafka
 
-Переиспользуемая NestJS Kafka-интеграция: подключается в любом сервисе через `KafkaModule.forRoot()`/`forRootAsync()` без копирования boilerplate-кода.
+Продакшн-готовая NestJS-интеграция с Kafka: продюсер, несколько независимых consumer-групп,
+ретраи с бэкоффом, dead letter queue, дедупликация по `eventId` и health-проба —
+подключается в любом сервисе через `KafkaModule.forRoot()` / `forRootAsync()`.
+
+Обновляетесь с 1.x? См. [CHANGELOG.md](./CHANGELOG.md) — в 2.0 есть ломающие изменения.
 
 ## Установка
 
@@ -15,7 +19,10 @@ npm install @mobkukariku/nestjs-kafka
 //npm.pkg.github.com/:_authToken=${NPM_TOKEN}
 ```
 
-## Использование
+Peer-зависимости: `@nestjs/common`, `@nestjs/core`, `kafkajs`, `reflect-metadata`.
+`ioredis` — опциональная, нужна только для `RedisDedupeStore`. Node.js >= 20.
+
+## Быстрый старт
 
 ```ts
 import { Module } from '@nestjs/common';
@@ -31,6 +38,20 @@ import { KafkaModule } from '@mobkukariku/nestjs-kafka';
 })
 export class AppModule {}
 ```
+
+В `main.ts` **обязательно** включите shutdown-хуки — без них продюсер не закроется
+корректно при остановке сервиса:
+
+```ts
+const app = await NestFactory.create(AppModule);
+app.enableShutdownHooks();
+await app.listen(3000);
+```
+
+По умолчанию модуль регистрируется глобально. Отключается через `isGlobal: false` —
+тогда `KafkaModule` нужно импортировать в каждом модуле, которому он нужен.
+
+## Продюсер
 
 ```ts
 import { Injectable } from '@nestjs/common';
@@ -54,6 +75,10 @@ export class BillingService {
 }
 ```
 
+`version` проставляется в `1`, если не задан явно, — согласованно в теле сообщения и в
+заголовке. Продюсер по умолчанию идемпотентный, `acks: -1`, сжатие GZIP; всё это
+переопределяется через `producer` в опциях модуля.
+
 ## Асинхронная конфигурация
 
 ```ts
@@ -67,9 +92,10 @@ KafkaModule.forRootAsync({
 })
 ```
 
-## Consumer
+## Консьюмеры
 
-Модуль поддерживает несколько независимых consumer'ов (свой `groupId` и набор топиков у каждого) через `KafkaModuleOptions.consumers`:
+Поддерживается несколько независимых consumer-групп (свой `groupId` и набор топиков
+у каждой):
 
 ```ts
 KafkaModule.forRoot({
@@ -79,18 +105,23 @@ KafkaModule.forRoot({
     {
       groupId: 'billing-service.payments',
       topics: ['billing.payments'],
-      maxRetries: 3,               // попыток на сообщение перед DLQ (по умолчанию 3)
-      deadLetterTopic: 'billing.payments.dlq', // опционально
-    },
-    {
-      groupId: 'billing-service.refunds',
-      topics: ['billing.refunds'],
+      deadLetterTopic: 'billing.payments.dlq', // обязателен
+      maxRetries: 3,          // попыток на сообщение перед DLQ (по умолчанию 3)
+      maxRetryDelayMs: 5000,  // потолок паузы между попытками (по умолчанию 5000)
+      partitionsConsumedConcurrently: 1,
     },
   ],
 })
 ```
 
-Хендлеры регистрируются через `KafkaConsumerService.registerHandler(eventType, handler)` — обычно в `onModuleInit()` своего сервиса:
+`deadLetterTopic` обязателен: без него сообщения, которые нельзя обработать, пришлось бы
+молча терять.
+
+### Регистрация обработчиков
+
+Обработчик привязан к тройке **топик + тип события + версия конверта**, а не к одному
+`eventType` — иначе одинаково названные события из разных топиков перехватывали бы
+обработчики друг друга.
 
 ```ts
 import { Injectable, OnModuleInit } from '@nestjs/common';
@@ -101,18 +132,26 @@ export class PaymentsListener implements OnModuleInit {
   constructor(private readonly consumer: KafkaConsumerService) {}
 
   onModuleInit() {
-    this.consumer.registerHandler('PAYMENT_PROCESSED', async (event: BaseKafkaEvent) => {
-      // обработка события
-    });
+    this.consumer.registerHandler(
+      { topic: 'billing.payments', eventType: 'PAYMENT_PROCESSED', version: 1 },
+      async (event) => {
+        // event.payload: Record<string, unknown>
+      },
+    );
   }
 }
 ```
 
-Реальное чтение сообщений (`consumer.run()`) стартует не в `onModuleInit`, а в `onApplicationBootstrap` — это гарантирует, что хендлеры из всех модулей приложения успеют зарегистрироваться до прихода первого сообщения.
+Чтение сообщений (`consumer.run()`) стартует не в `onModuleInit`, а в
+`onApplicationBootstrap` — так все обработчики приложения гарантированно успевают
+зарегистрироваться до прихода первого сообщения. Если группа подписана на топик, для
+которого не зарегистрировано ни одного обработчика, приложение падает на старте.
 
 ### Типизированный payload
 
-В форме выше `event.payload` имеет тип `Record<string, unknown>` — библиотека проверяет только форму `BaseKafkaEvent`, но не то, что лежит внутри `payload` для конкретного `eventType`. Чтобы получить в хендлере типизированный payload, передайте третьим аргументом type guard:
+Библиотека проверяет форму конверта `BaseKafkaEvent`, но не содержимое `payload`. Чтобы
+получить в обработчике типизированный payload, передайте type guard — сужение типа всегда
+подкреплено рантайм-проверкой, а не пустым `as`-кастом:
 
 ```ts
 interface PaymentProcessedPayload {
@@ -120,24 +159,107 @@ interface PaymentProcessedPayload {
   amount: number;
 }
 
-function isPaymentProcessedPayload(payload: unknown): payload is PaymentProcessedPayload {
-  if (typeof payload !== 'object' || payload === null) return false;
-  const p = payload as Record<string, unknown>;
-  return typeof p.orderId === 'string' && typeof p.amount === 'number';
+function isPaymentProcessedPayload(p: unknown): p is PaymentProcessedPayload {
+  if (typeof p !== 'object' || p === null) return false;
+  const v = p as Record<string, unknown>;
+  return typeof v.orderId === 'string' && typeof v.amount === 'number';
 }
 
 this.consumer.registerHandler(
-  'PAYMENT_PROCESSED',
-  async (event: BaseKafkaEvent<PaymentProcessedPayload>) => {
-    // event.payload.orderId: string, event.payload.amount: number
+  { topic: 'billing.payments', eventType: 'PAYMENT_PROCESSED' },
+  async (event) => {
+    event.payload.orderId; // string
+    event.payload.amount;  // number
   },
-  isPaymentProcessedPayload,
+  { validate: isPaymentProcessedPayload },
 );
 ```
 
-Валидатор обязателен: сузить тип payload без него нельзя — API устроен так, чтобы типовое сужение всегда было подкреплено реальной рантайм-проверкой, а не пустым `as`-кастом.
+### Обработка ошибок и DLQ
 
-**Обработка ошибок:** входящее сообщение валидируется на соответствие форме `BaseKafkaEvent` (`eventId`, `eventType`, `timestamp`, `source`, `payload`). Если сообщение невалидно — оно сразу уходит в `deadLetterTopic` (если задан) или логируется и отбрасывается. То же происходит, если для хендлера задан валидатор payload и `payload` его не прошёл — проверка выполняется один раз, до ретраев, так как невалидный payload не станет валидным при повторе. Если хендлер бросает ошибку — попытка повторяется до `maxRetries` раз с нарастающей паузой, после чего сообщение также уходит в `deadLetterTopic` (через `KafkaProducerService`) либо логируется и отбрасывается, если `deadLetterTopic` не задан.
+В `deadLetterTopic` уходит сообщение, если:
+
+| Причина | Ретраится |
+|---|---|
+| Пустое тело | нет |
+| Невалидный JSON | нет |
+| Не совпадает форма конверта `BaseKafkaEvent` | нет |
+| Нет обработчика для `топик::eventType::версия` | нет |
+| `payload` не прошёл валидатор | нет |
+| Обработчик упал | да, `maxRetries` раз |
+
+Невалидное сообщение не станет валидным при повторе, поэтому ретраится только падение
+обработчика. Паузы между попытками — экспоненциальные с джиттером и потолком
+`maxRetryDelayMs`; между попытками отправляется `heartbeat`, чтобы группу не выкинуло
+на ребаланс.
+
+В DLQ уходит конверт `DEAD_LETTER` с координатами исходного сообщения (топик, партиция,
+оффсет), исходным телом и причиной. **Если публикация в DLQ упала, ошибка пробрасывается
+наружу**: kafkajs не закоммитит оффсет и повторит батч — сообщение не потеряется.
+
+## Дедупликация
+
+Каждое событие обрабатывается один раз по `eventId`. Схема трёхфазная: `claim` с коротким
+in-flight TTL до обработки, `commit` с основным TTL после успеха, `release` на любом
+провальном пути. Короткий TTL на этапе `claim` принципиален — если процесс упадёт между
+`claim` и коммитом оффсета, запись протухнет сама и переотданное сообщение будет
+обработано, а не отброшено как дубликат.
+
+После ухода в DLQ клейм снимается — иначе ручной реплей из DLQ отбрасывался бы как дубликат.
+
+По умолчанию используется `InMemoryDedupeStore`. **Он per-process**: при нескольких
+репликах каждая ведёт свой набор `eventId`, и событие может быть обработано по разу на
+каждой реплике. Для мультиреплики нужен Redis:
+
+```bash
+npm install ioredis
+```
+
+```ts
+import Redis from 'ioredis';
+import { RedisDedupeStore } from '@mobkukariku/nestjs-kafka/redis';
+
+KafkaModule.forRootAsync({
+  useFactory: () => ({
+    clientId: 'billing-service',
+    brokers: ['localhost:9092'],
+    dedupe: new RedisDedupeStore(new Redis(process.env.REDIS_URL!)),
+  }),
+})
+```
+
+Дедупликацию можно отключить для конкретного обработчика: `{ idempotent: false }`.
+Свой стор — реализация интерфейса `DedupeStore`.
+
+## Health-проба
+
+```ts
+import { Controller, Get } from '@nestjs/common';
+import { KafkaHealthIndicator } from '@mobkukariku/nestjs-kafka';
+
+@Controller('health')
+export class HealthController {
+  constructor(private readonly kafka: KafkaHealthIndicator) {}
+
+  @Get('kafka')
+  check() {
+    return this.kafka.check();
+    // { ready: true, producer: 'connected', consumers: { 'billing-service.payments': 'RUNNING' } }
+  }
+}
+```
+
+`ready` = продюсер подключён (он нужен для DLQ) и все группы в `RUNNING`. Состояния группы:
+`INIT` → `RUNNING` → `STOPPED` (штатное гашение) или `CRASHED` (авария). Годится как
+readiness-проба в Kubernetes.
+
+## Разработка
+
+```bash
+npm run build
+npm test
+npm run test:cov
+```
 
 ## Публикация новой версии
 

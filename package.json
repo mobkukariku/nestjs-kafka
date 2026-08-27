@@ -1,7 +1,7 @@
 {
   "name": "@mobkukariku/nestjs-kafka",
-  "version": "1.1.0",
-  "description": "Reusable NestJS Kafka producer integration module",
+  "version": "2.0.0",
+  "description": "Production-ready NestJS Kafka module: producer, multi-group consumers, retries, DLQ, dedupe and health",
   "author": "Damir Tagankhozhaev",
   "license": "UNLICENSED",
   "private": false,
@@ -11,26 +11,60 @@
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./redis": {
+      "types": "./dist/dedupe/redis-dedupe.store.d.ts",
+      "default": "./dist/dedupe/redis-dedupe.store.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "typesVersions": {
+    "*": {
+      "redis": [
+        "dist/dedupe/redis-dedupe.store.d.ts"
+      ]
+    }
+  },
   "files": [
     "dist"
   ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "build:watch": "tsc -p tsconfig.build.json --watch",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:cov": "jest --coverage"
   },
   "peerDependencies": {
     "@nestjs/common": "^11.0.1",
     "@nestjs/core": "^11.0.1",
+    "ioredis": "^5.0.0 || ^6.0.0",
     "kafkajs": "^2.2.4",
     "reflect-metadata": "^0.2.0"
+  },
+  "peerDependenciesMeta": {
+    "ioredis": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@nestjs/common": "^11.0.1",
     "@nestjs/core": "^11.0.1",
+    "@types/jest": "^29.5.14",
     "@types/node": "^24.0.0",
+    "ioredis": "^6.0.0",
+    "jest": "^29.7.0",
     "kafkajs": "^2.2.4",
     "reflect-metadata": "^0.2.0",
+    "ts-jest": "^29.2.5",
     "typescript": "^5.7.3"
   },
   "publishConfig": {

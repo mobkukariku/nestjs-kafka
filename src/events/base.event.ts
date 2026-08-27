@@ -1,6 +1,7 @@
 export interface BaseKafkaEvent<T = Record<string, unknown>> {
   eventId: string;
   eventType: string;
+  version?: number;
   timestamp: string;
   source: string;
   traceId?: string;
@@ -17,6 +18,7 @@ export function isBaseKafkaEvent(value: unknown): value is BaseKafkaEvent {
     typeof event.eventType === 'string' &&
     typeof event.timestamp === 'string' &&
     typeof event.source === 'string' &&
+    (event.version === undefined || typeof event.version === 'number') &&
     'payload' in event
   );
 }
